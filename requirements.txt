@@ -1,0 +1,4 @@
+faster-whisper
+torch
+tqdm
+python-docx

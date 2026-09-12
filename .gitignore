@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+logs/
+*.log
+
+# Audio input/output
+input/
+output/
+archive/
+
+# Whisper models
+models/
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+Desktop.ini
+# Archives & temporary artifacts
+*.rar
+*.zip
+*.7z
+nul
