@@ -49,6 +49,8 @@ class TestGpuFallback(unittest.TestCase):
 
         self.assertEqual(result["text"], "")
         self.assertEqual(mock_load_model.call_count, 1)
+        self.assertEqual(mock_load_model.call_args.kwargs["model_path"], "models/faster-whisper-medium")
+        self.assertEqual(mock_load_model.call_args.kwargs["device"], "cpu")
         temp_path.unlink(missing_ok=True)
 
 
