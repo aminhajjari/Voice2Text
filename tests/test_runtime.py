@@ -197,5 +197,109 @@ class TestMixedScriptHandling(unittest.TestCase):
         temp_path.unlink(missing_ok=True)
 
 
+class TestFilenameSanitization(unittest.TestCase):
+    def test_sanitize_output_filename_preserves_valid_names(self):
+        from src.utils import sanitize_output_filename
+        self.assertEqual(sanitize_output_filename("audio"), "audio")
+        self.assertEqual(sanitize_output_filename("test_audio"), "test_audio")
+        self.assertEqual(sanitize_output_filename("test audio"), "test audio")
+        self.assertEqual(sanitize_output_filename("meeting-01"), "meeting-01")
+        self.assertEqual(sanitize_output_filename("meeting.test"), "meeting.test")
+        self.assertEqual(sanitize_output_filename("جلسه"), "جلسه")
+        self.assertEqual(sanitize_output_filename("جلسه 1"), "جلسه 1")
+        self.assertEqual(sanitize_output_filename("audio (final)"), "audio (final)")
+
+    def test_sanitize_output_filename_fallback_for_empty_stems(self):
+        from src.utils import sanitize_output_filename
+        self.assertEqual(sanitize_output_filename(""), "transcript")
+        self.assertEqual(sanitize_output_filename("..."), "transcript")
+        self.assertEqual(sanitize_output_filename("   "), "transcript")
+        self.assertEqual(sanitize_output_filename(":::"), "___")
+        self.assertEqual(sanitize_output_filename(". . ."), "transcript")
+
+
+class TestSpellCorrection(unittest.TestCase):
+    def test_correct_persian_spelling_variants(self):
+        from src.utils import correct_persian_spelling
+        # Arabic to Persian normalization
+        self.assertEqual(correct_persian_spelling("كتاب يادگيري"), "کتاب یادگیری")
+        # Affixes and ZWNJ
+        self.assertEqual(correct_persian_spelling("مي رود"), "می‌رود")
+        self.assertEqual(correct_persian_spelling("نمي دانم"), "نمی‌دانم")
+        self.assertEqual(correct_persian_spelling("صدا ها"), "صدا‌ها")
+        self.assertEqual(correct_persian_spelling("بزرگ ترين"), "بزرگ‌ترین")
+        self.assertEqual(correct_persian_spelling("خانه اش"), "خانه‌اش")
+        # Deduplication of repeated character hallucinations
+        self.assertEqual(correct_persian_spelling("تتتتتست"), "تتست")
+
+    def test_persian_and_arabic_indic_numbers_preserved(self):
+        from src.utils import correct_persian_spelling
+        # Mandatory: Persian numbers must not be truncated
+        self.assertEqual(correct_persian_spelling("مبلغ ۱۰۰۰ تومان"), "مبلغ ۱۰۰۰ تومان")
+        self.assertEqual(correct_persian_spelling("مبلغ ۱۰۰۰۰۰۰ ریال"), "مبلغ ۱۰۰۰۰۰۰ ریال")
+        self.assertEqual(correct_persian_spelling("شماره ۰۹۱۲۰۰۰۱۲۳۴"), "شماره ۰۹۱۲۰۰۰۱۲۳۴")
+        self.assertEqual(correct_persian_spelling("سال ۱۴۰۴"), "سال ۱۴۰۴")
+        # Arabic-Indic digits
+        self.assertEqual(correct_persian_spelling("رقم ١٠٠٠"), "رقم ١٠٠٠")
+
+    def test_punctuation_preserved(self):
+        from src.utils import correct_persian_spelling
+        self.assertEqual(correct_persian_spelling("،،،"), "،،،")
+        self.assertEqual(correct_persian_spelling("؟؟؟"), "؟؟؟")
+        self.assertEqual(correct_persian_spelling("!!!"), "!!!")
+        self.assertEqual(correct_persian_spelling("..."), "...")
+
+    def test_english_french_german_preserved(self):
+        from src.utils import correct_persian_spelling
+        # English
+        self.assertEqual(
+            correct_persian_spelling("Hello everyone OpenAI Meeting Management Software Engineering"),
+            "Hello everyone OpenAI Meeting Management Software Engineering",
+        )
+        # French
+        self.assertEqual(
+            correct_persian_spelling("Bonjour Merci beaucoup Paris Université"),
+            "Bonjour Merci beaucoup Paris Université",
+        )
+        # German
+        self.assertEqual(
+            correct_persian_spelling("Guten Morgen Danke Universität Berlin"),
+            "Guten Morgen Danke Universität Berlin",
+        )
+
+    def test_arabic_text_preservation_and_normalization(self):
+        from src.utils import correct_persian_spelling
+        # Legitimate Arabic: characters are not deleted or corrupted; Persian orthography applied intentionally
+        self.assertEqual(correct_persian_spelling("مرحبا"), "مرحبا")
+        self.assertEqual(correct_persian_spelling("جامعة"), "جامعه")
+
+    def test_mixed_language_transcript(self):
+        from src.utils import correct_persian_spelling
+        text = "سلام everyone، امروز درباره OpenAI و Universität Berlin صحبت می‌کنیم."
+        expected = "سلام everyone، امروز درباره OpenAI و Universität Berlin صحبت می‌کنیم."
+        self.assertEqual(correct_persian_spelling(text), expected)
+
+    def test_persian_spell_correction_preserved(self):
+        from src.utils import correct_persian_spelling
+        self.assertEqual(correct_persian_spelling("می رود"), "می‌رود")
+        self.assertEqual(correct_persian_spelling("نمی دانم"), "نمی‌دانم")
+        self.assertEqual(correct_persian_spelling("کتاب ها"), "کتاب‌ها")
+        self.assertEqual(correct_persian_spelling("بزرگ تر"), "بزرگ‌تر")
+        self.assertEqual(correct_persian_spelling("خانه ام"), "خانه‌ام")
+        self.assertEqual(correct_persian_spelling("دسته اش"), "دسته‌اش")
+
+    def test_idempotence(self):
+        from src.utils import correct_persian_spelling
+        samples = [
+            "سلام everyone، امروز درباره OpenAI و Universität Berlin صحبت می‌کنیم.",
+            "مبلغ ۱۰۰۰ تومان و ۱۰۰۰۰۰۰ ریال",
+            "کتاب های آموزشی می روند",
+            "Hello everyone, testing 123",
+            "Bonjour Merci beaucoup Paris",
+        ]
+        for s in samples:
+            self.assertEqual(correct_persian_spelling(correct_persian_spelling(s)), correct_persian_spelling(s))
+
+
 if __name__ == "__main__":
     unittest.main()
