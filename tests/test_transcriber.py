@@ -16,8 +16,25 @@ class TestTranscriber(unittest.TestCase):
             transcribe_audio(Path("path/to/invalid/audio/file.wav"), model=None)
 
     def test_build_compute_type_candidates_prefers_cuda_fallbacks(self):
-        candidates = transcriber._build_compute_type_candidates("cuda")
-        self.assertEqual(candidates, ["float16", "int8_float16", "float32"])
+        # When CTranslate2 reports modern CUDA capabilities (e.g. Turing/Ampere/Ada)
+        with patch("src.transcriber._get_supported_compute_types", return_value={"float16", "bfloat16", "int8_float16", "float32"}):
+            candidates = transcriber._build_compute_type_candidates("cuda")
+            self.assertEqual(candidates, ["float16", "bfloat16", "int8_float16", "float32"])
+
+        # When on a GPU that does not support FP16 (e.g. GTX 1050 Ti)
+        with patch("src.transcriber._get_supported_compute_types", return_value={"int8", "int8_float32", "float32"}):
+            candidates = transcriber._build_compute_type_candidates("cuda")
+            self.assertEqual(candidates, ["int8_float32", "int8", "float32"])
+
+        # When get_supported_compute_types returns None (fallback)
+        with patch("src.transcriber._get_supported_compute_types", return_value=None):
+            candidates = transcriber._build_compute_type_candidates("cuda")
+            self.assertEqual(candidates, ["float16", "bfloat16", "int8_float16", "int8_float32", "int8", "float32"])
+
+    def test_build_compute_type_candidates_cpu(self):
+        with patch("src.transcriber._get_supported_compute_types", return_value={"int8", "float32"}):
+            candidates = transcriber._build_compute_type_candidates("cpu")
+            self.assertEqual(candidates, ["int8", "float32"])
 
     def test_transcribe_audio_passes_hallucination_controls(self):
         class DummyModel:
@@ -168,6 +185,44 @@ class TestTranscriber(unittest.TestCase):
 
         self.assertEqual(result["text"], "تست")
 
+    def test_transcribe_audio_spell_correction(self):
+        class DummySegment:
+            def __init__(self, start, end, text):
+                self.start = start
+                self.end = end
+                self.text = text
+
+        class DummyModel:
+            def transcribe(self, *args, **kwargs):
+                return (
+                    [DummySegment(0.0, 1.0, "كتاب هاي آموزشي مي روند")],
+                    type("Info", (), {"duration": 1.0})(),
+                )
+
+        class DummyMonitor:
+            def start(self):
+                return None
+            def stop(self):
+                return None
+            def get_stats(self):
+                return {}
+
+        with patch("src.transcriber.GPUMonitor", return_value=DummyMonitor()):
+            model = DummyModel()
+            temp_path = Path("tests/spell-test.wav")
+            temp_path.write_bytes(b"fake audio")
+            try:
+                # Without spell correction
+                res_off = transcribe_audio(temp_path, model, device="cpu", language="fa", enable_spell_correction=False)
+                self.assertEqual(res_off["text"], "كتاب هاي آموزشي مي روند")
+
+                # With spell correction
+                res_on = transcribe_audio(temp_path, model, device="cpu", language="fa", enable_spell_correction=True)
+                self.assertEqual(res_on["text"], "کتاب‌های آموزشی می‌روند")
+            finally:
+                temp_path.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
+    
