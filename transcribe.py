@@ -73,6 +73,12 @@ def _build_parser():
         help="How to handle mixed-script output after inference",
     )
     parser.add_argument(
+        "--spell-correction",
+        default=None,
+        action=argparse.BooleanOptionalAction,
+        help="Enable or disable Persian spelling normalization and correction",
+    )
+    parser.add_argument(
         "--output-dir",
         "-o",
         default=None,
@@ -109,7 +115,17 @@ def _validate_requested_targets(targets, explicit_paths_requested):
     return valid_targets
 
 
+def _ensure_console_encoding():
+    for stream in (sys.stdout, sys.stderr):
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main(args_list=None):
+    _ensure_console_encoding()
     parser = _build_parser()
     args = parser.parse_args(args_list)
 
@@ -139,6 +155,7 @@ def main(args_list=None):
         hotwords=args.hotwords,
         condition_on_previous_text=args.condition_on_previous_text,
         mixed_script_mode=args.mixed_script_mode,
+        enable_spell_correction=args.spell_correction,
     )
 
     requested_paths, explicit_paths_requested = _collect_targets(args.paths)
@@ -185,6 +202,7 @@ def main(args_list=None):
     print(f"Compute type: {compute_type}")
     print(f"Language: {settings['language']}")
     print(f"VAD enabled: {settings['vad_filter']}")
+    print(f"Spell correction: {settings['enable_spell_correction']}")
     print(f"Mixed-script mode: {settings['mixed_script_mode']}")
     print(f"CUDA available: {status['cuda_available']}")
     print(f"CTranslate2 CUDA device count: {status['ctranslate2_cuda_device_count']}")
@@ -215,6 +233,7 @@ def main(args_list=None):
                 hotwords=settings["hotwords"],
                 condition_on_previous_text=settings["condition_on_previous_text"],
                 mixed_script_mode=settings["mixed_script_mode"],
+                enable_spell_correction=settings["enable_spell_correction"],
             )
 
             for warning in result.get("warnings", []):
