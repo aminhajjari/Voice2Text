@@ -8,7 +8,7 @@ OUTPUT_DIR = BASE_DIR / "output"
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "transcription.log"
 
-AUDIO_FORMATS = [".mp3", ".wav", ".m4a", ".flac", ".ogg", ".mp4"]
+AUDIO_FORMATS = [".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac", ".mp4"]
 OUTPUT_FORMATS = ["txt", "docx", "srt", "json"]
 
 VALID_PRESETS = {"default", "safe"}
@@ -71,7 +71,7 @@ DEFAULT_CONDITION_ON_PREVIOUS_TEXT = _getenv_bool(
 DEFAULT_MIXED_SCRIPT_MODE = normalize_mixed_script_mode(
     os.getenv("WHISPER_MIXED_SCRIPT_MODE", "off")
 )
-
+DEFAULT_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "0"))
 ENABLE_SPELL_CORRECTION = _getenv_bool("ENABLE_SPELL_CORRECTION", False)
 
 PRESET_OVERRIDES = {
@@ -91,10 +91,13 @@ PRESET_OVERRIDES = {
 def _candidate_model_names(model_name=None):
     names = []
     if model_name:
+        # User explicitly requested a model: only search for variants of this model.
+        # Do NOT silently downgrade to medium/base.
         names.append(model_name)
-    if model_name != DEFAULT_MODEL_NAME:
+    else:
+        # No explicit model provided: check default and fallback candidates
         names.append(DEFAULT_MODEL_NAME)
-    names.extend(["medium", "base"])
+        names.extend(["medium", "base"])
 
     seen = set()
     for raw_name in names:
@@ -132,6 +135,11 @@ def resolve_model_path(model_path=None, model_name=None):
         if resolved_path.exists():
             return str(resolved_path)
 
+    # If the user explicitly requested a model name that was not found locally in models/,
+    # preserve the user's requested model name rather than silently downgrading to DEFAULT_MODEL_NAME.
+    if model_name:
+        return str(model_name)
+
     default_name = (
         DEFAULT_MODEL_NAME
         if str(DEFAULT_MODEL_NAME).startswith("faster-whisper-")
@@ -161,6 +169,7 @@ def resolve_runtime_settings(
     hotwords=None,
     condition_on_previous_text=None,
     mixed_script_mode=None,
+    enable_spell_correction=None,
 ):
     preset_name = normalize_preset_name(preset or DEFAULT_PRESET)
     preset_values = PRESET_OVERRIDES.get(preset_name, {})
@@ -238,6 +247,16 @@ def resolve_runtime_settings(
         or preset_values.get("mixed_script_mode")
         or DEFAULT_MIXED_SCRIPT_MODE
     )
+    resolved_enable_spell_correction = (
+        bool(enable_spell_correction)
+        if enable_spell_correction is not None
+        else bool(
+            preset_values.get(
+                "enable_spell_correction",
+                ENABLE_SPELL_CORRECTION,
+            )
+        )
+    )
     resolved_model_path = resolve_model_path(model_name=resolved_model_name)
 
     return {
@@ -258,4 +277,5 @@ def resolve_runtime_settings(
         "hotwords": resolved_hotwords,
         "condition_on_previous_text": resolved_condition_on_previous_text,
         "mixed_script_mode": resolved_mixed_script_mode,
+        "enable_spell_correction": resolved_enable_spell_correction,
     }
