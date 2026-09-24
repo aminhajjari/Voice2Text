@@ -1,4 +1,5 @@
 import logging
+import re
 import shutil
 import subprocess
 import threading
@@ -84,16 +85,19 @@ def scan_audio_files(input_dir=None):
     ]
 
 
-def sanitize_output_filename(filename):
+def sanitize_output_filename(filename, default_fallback="transcript"):
     """Remove/replace characters invalid in Windows/POSIX filenames."""
+    if filename is None:
+        return default_fallback
     # Invalid characters in Windows: < > : " / \ | ? *
     invalid_chars = '<>:"|?*\\'
-    sanitized = filename
+    sanitized = str(filename)
     for char in invalid_chars:
         sanitized = sanitized.replace(char, '_')
     # Avoid null character and control characters
     sanitized = ''.join(c if ord(c) >= 32 else '_' for c in sanitized)
-    return sanitized.strip()
+    sanitized = sanitized.strip().strip(". ")
+    return sanitized if sanitized else default_fallback
 
 
 def validate_output_path(output_path, base_dir):
@@ -105,6 +109,70 @@ def validate_output_path(output_path, base_dir):
         return True
     except ValueError:
         return False
+
+
+def correct_persian_spelling(text):
+    """
+    Apply rule-based Persian orthographic and spelling normalization.
+    Standardizes Arabic vs Persian letter variants (ی/ي, ک/ك, ه/ة),
+    affix spacing (می/نمی, ها, تر/ترین), repeated character deduplication,
+    and zero-width non-joiner (zwnj / نیم‌فاصله) usage.
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+
+    s = text
+
+    # 1. Standardize character variants
+    char_map = {
+        "\u0643": "\u06A9",  # Arabic Kaf ك -> Persian Ke ک
+        "\u0649": "\u06CC",  # Arabic Alef Maksura ى -> Persian Ye ی
+        "\u064A": "\u06CC",  # Arabic Yeh ي -> Persian Ye ی
+        "\u0629": "\u0647",  # Arabic Teh Marbuta ة -> Persian Heh ه
+        "\u06C0": "\u0647\u200C\u06CC",  # Heh with Yeh above ۀ -> ه‌ی
+        "\u064B": "",  # Remove Fathatan ً
+        "\u064C": "",  # Remove Dammatan ٌ
+        "\u064D": "",  # Remove Kasratan ٍ
+        "\u064E": "",  # Remove Fatha َ
+        "\u064F": "",  # Remove Damma ُ
+        "\u0650": "",  # Remove Kasra ِ
+        "\u0651": "",  # Remove Shadda ّ
+        "\u0652": "",  # Remove Sukun ْ
+        "\u0640": "",  # Remove Tatweel ـ
+    }
+    for orig, target in char_map.items():
+        s = s.replace(orig, target)
+
+    # 2. Normalize whitespace and redundant ZWNJ
+    # Replace multiple ZWNJs or ZWNJ next to space
+    s = s.replace("\u200C\u200C", "\u200C")
+    s = re.sub(r"[ \t]*\u200C[ \t]*", "\u200C", s)
+
+    # 3. Collapse extreme repeated characters (hallucinations like تتتتت or سسسسس -> max 2)
+    # Target only Persian and Arabic letters, excluding digits and punctuation
+    s = re.sub(r"([\u0621-\u064A\u0671-\u06D3\u06D5\u06FB-\u06FC\u06FE-\u06FF])\1{2,}", r"\1\1", s)
+
+    # 4. Standard affix spacing with ZWNJ (نیم‌فاصله)
+    zwnj = "\u200C"
+    # Verbal prefixes: می / نمی
+    # e.g. "می رود" -> "می‌رود", "نمی دانم" -> "نمی‌دانم"
+    s = re.sub(r"(?<![\u0600-\u06FF])(می|نمی)[ ]+([\u0600-\u06FF]+)", r"\1" + zwnj + r"\2", s)
+
+    # Plural suffix: ها
+    # e.g. "کتاب ها" -> "کتاب‌ها"
+    s = re.sub(r"([\u0600-\u06FF]+)[ ]+(ها|های|هایی|هایمان|هایتان|هایشان)(?![\u0600-\u06FF])", r"\1" + zwnj + r"\2", s)
+
+    # Comparative / superlative suffixes: تر / ترین
+    # e.g. "بهتر ترین" -> "بهترین", "سریع تر" -> "سریع‌تر"
+    s = re.sub(r"([\u0600-\u06FF]+)[ ]+(تر|ترین)(?![\u0600-\u06FF])", r"\1" + zwnj + r"\2", s)
+
+    # Indefinite / pronominal suffix: ای / ام / ات / اش / ایم / اید / اند after 'ه'
+    # e.g. "خانه ام" -> "خانه‌ام"
+    s = re.sub(r"([\u0600-\u06FF]+[ه])[ ]+(ام|ات|اش|ای|ایم|اید|اند)(?![\u0600-\u06FF])", r"\1" + zwnj + r"\2", s)
+
+    # Clean redundant spaces
+    s = re.sub(r"[ ]{2,}", " ", s)
+    return s.strip()
 
 
 def format_timestamp(seconds):
