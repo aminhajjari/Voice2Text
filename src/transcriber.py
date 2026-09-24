@@ -10,6 +10,7 @@ from tqdm import tqdm
 from src.config import (
     DEFAULT_BEAM_SIZE,
     DEFAULT_COMPUTE_TYPE,
+    DEFAULT_CPU_THREADS,
     DEFAULT_DEVICE,
     DEFAULT_LANGUAGE,
     DEFAULT_COMPRESSION_RATIO_THRESHOLD,
@@ -19,7 +20,7 @@ from src.config import (
     DEFAULT_VAD_FILTER,
     resolve_model_path,
 )
-from src.utils import GPUMonitor, detect_device, write_log
+from src.utils import GPUMonitor, correct_persian_spelling, detect_device, write_log
 
 
 def _is_gpu_memory_error(exc):
@@ -29,15 +30,55 @@ def _is_gpu_memory_error(exc):
     )
 
 
+def _get_supported_compute_types(device_name):
+    """Query CTranslate2 for hardware-supported compute types on this device."""
+    try:
+        import ctranslate2
+        if hasattr(ctranslate2, "get_supported_compute_types"):
+            return set(ctranslate2.get_supported_compute_types(device_name))
+    except Exception:
+        pass
+    return None
+
+
 def _build_compute_type_candidates(device_name, requested_compute_type=None):
+    device_name = (device_name or "").lower()
     candidates = []
+
+    supported = _get_supported_compute_types(device_name)
+
     if requested_compute_type:
         candidates.append(requested_compute_type)
 
     if device_name == "cuda":
-        candidates.extend(["float16", "int8_float16", "float32"])
+        # Preferred order for NVIDIA GPUs from fastest/optimal to legacy:
+        # float16 (modern GPUs) -> bfloat16 (Ampere+) -> int8_float16 -> int8_float32 -> int8 -> float32
+        preferred_cuda = ["float16", "bfloat16", "int8_float16", "int8_float32", "int8", "float32"]
+        if supported is not None:
+            # Add preferred types supported by this specific GPU architecture
+            for c_type in preferred_cuda:
+                if c_type in supported and c_type not in candidates:
+                    candidates.append(c_type)
+            # If for some reason none of preferred matched, add all reported supported
+            for c_type in supported:
+                if c_type not in candidates:
+                    candidates.append(c_type)
+        else:
+            candidates.extend(preferred_cuda)
+
     elif device_name == "cpu":
-        candidates.extend(["int8", "float32"])
+        # Preferred order for CPUs: int8 (fast vectorized) -> int8_float32 -> float32
+        preferred_cpu = ["int8", "int8_float32", "float32"]
+        if supported is not None:
+            for c_type in preferred_cpu:
+                if c_type in supported and c_type not in candidates:
+                    candidates.append(c_type)
+            for c_type in supported:
+                if c_type not in candidates:
+                    candidates.append(c_type)
+        else:
+            candidates.extend(preferred_cpu)
+
     else:
         candidates.append(DEFAULT_COMPUTE_TYPE or "float32")
 
@@ -51,11 +92,14 @@ def _build_compute_type_candidates(device_name, requested_compute_type=None):
     return unique_candidates
 
 
-def load_model(model_path=None, device=None, compute_type=None):
+def load_model(model_path=None, device=None, compute_type=None, cpu_threads=None):
     resolved_model_path = resolve_model_path(model_path=model_path or None)
     device_name = (device or DEFAULT_DEVICE or "auto").lower()
     if device_name not in {"cuda", "cpu"}:
         device_name = detect_device().lower()
+
+    if cpu_threads is None:
+        cpu_threads = DEFAULT_CPU_THREADS
 
     compute_type_candidates = _build_compute_type_candidates(device_name, compute_type)
     last_error = None
@@ -65,10 +109,14 @@ def load_model(model_path=None, device=None, compute_type=None):
             f"Attempting to load model from {resolved_model_path} with device={device_name}, compute_type={candidate_compute_type}"
         )
         try:
+            model_kwargs = {}
+            if cpu_threads > 0:
+                model_kwargs["cpu_threads"] = cpu_threads
             model = WhisperModel(
                 str(resolved_model_path),
                 device=device_name,
                 compute_type=candidate_compute_type,
+                **model_kwargs,
             )
             write_log(
                 f"Model loaded successfully using device={device_name}, compute_type={candidate_compute_type}"
@@ -79,27 +127,34 @@ def load_model(model_path=None, device=None, compute_type=None):
             write_log(
                 f"Model load failed for compute_type={candidate_compute_type} device={device_name}: {exc}"
             )
-            if device_name == "cuda" and _is_gpu_memory_error(exc):
-                continue
+            # Try next compute type if available
 
     if device_name == "cuda":
         fallback_device = "cpu"
-        fallback_compute_type = "int8"
+        fallback_candidates = _build_compute_type_candidates(fallback_device)
         write_log(
             f"Falling back to CPU for model loading after CUDA failure: {last_error}"
         )
-        try:
-            model = WhisperModel(
-                str(resolved_model_path),
-                device=fallback_device,
-                compute_type=fallback_compute_type,
-            )
-            write_log(
-                f"Model loaded successfully using device={fallback_device}, compute_type={fallback_compute_type}"
-            )
-            return model, fallback_compute_type, fallback_device
-        except Exception as fallback_exc:
-            raise fallback_exc from last_error
+        for fallback_compute_type in fallback_candidates:
+            try:
+                model_kwargs = {}
+                if cpu_threads > 0:
+                    model_kwargs["cpu_threads"] = cpu_threads
+                model = WhisperModel(
+                    str(resolved_model_path),
+                    device=fallback_device,
+                    compute_type=fallback_compute_type,
+                    **model_kwargs,
+                )
+                write_log(
+                    f"Model loaded successfully using device={fallback_device}, compute_type={fallback_compute_type}"
+                )
+                return model, fallback_compute_type, fallback_device
+            except Exception as fallback_exc:
+                write_log(
+                    f"CPU fallback candidate compute_type={fallback_compute_type} failed: {fallback_exc}"
+                )
+                last_error = fallback_exc
 
     if last_error is not None:
         raise last_error
@@ -295,6 +350,7 @@ def transcribe_audio(
     hotwords=None,
     condition_on_previous_text=None,
     mixed_script_mode="off",
+    enable_spell_correction=False,
     on_progress=None,
 ):
     audio_path = Path(audio_file).expanduser().resolve()
@@ -354,11 +410,14 @@ def transcribe_audio(
         )
 
         result = _process_segments(segments, info, audio_path, start_time, monitor, on_progress=on_progress)
+        if enable_spell_correction:
+            for seg in result.get("segments", []):
+                seg["text"] = correct_persian_spelling(seg.get("text", ""))
+            result["text"] = "\n".join(seg["text"] for seg in result["segments"] if seg.get("text")).strip()
         return _apply_mixed_script_policy(result, language, mixed_script_mode)
     except Exception as exc:
         if str(device).lower() == "cuda" and _is_gpu_memory_error(exc):
             fallback_device = "cpu"
-            fallback_compute_type = "int8"
             write_log(
                 f"GPU transcription failed for {audio_path.name}: {exc}. Falling back to CPU."
             )
@@ -371,7 +430,7 @@ def transcribe_audio(
                 fallback_model, _, _ = load_model(
                     model_path=model_path or resolve_model_path(),
                     device=fallback_device,
-                    compute_type=fallback_compute_type,
+                    compute_type=None,
                 )
                 segments, info = fallback_model.transcribe(
                     str(audio_path),
@@ -388,6 +447,10 @@ def transcribe_audio(
                     condition_on_previous_text=condition_on_previous_text,
                 )
                 result = _process_segments(segments, info, audio_path, start_time, monitor, on_progress=on_progress)
+                if enable_spell_correction:
+                    for seg in result.get("segments", []):
+                        seg["text"] = correct_persian_spelling(seg.get("text", ""))
+                    result["text"] = "\n".join(seg["text"] for seg in result["segments"] if seg.get("text")).strip()
                 return _apply_mixed_script_policy(result, language, mixed_script_mode)
             except Exception as fallback_exc:
                 write_log(f"CPU fallback failed for {audio_path.name}: {fallback_exc}")
