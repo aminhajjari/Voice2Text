@@ -27,7 +27,7 @@ OUTPUT_DIR="/home/gkianfar/scratch/Amin/Voice/outputs"
 source /home/gkianfar/scratch/Amin/Voice/Voicevenv/bin/activate
 
 # Move to project source directory
-cd "${SRC_DIR}" || exit 1
+cd "${PROJECT_DIR}" || exit 1
 
 # Print job information
 echo "============================================================"
