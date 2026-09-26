@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=xcy_fullexp
+#SBATCH --job-name=Voice2Text
 #SBATCH --account=def-arashmoh_gpu
 #SBATCH --time=7-00:00:00
 #SBATCH --nodes=1
