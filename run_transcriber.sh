@@ -50,6 +50,11 @@ python transcribe.py
 
 EXIT_CODE=$?
 
+if [ "${EXIT_CODE}" -eq 0 ] && [ -z "$(ls -A "${PROJECT_DIR}/input" 2>/dev/null)" ]; then
+    echo "ERROR: input/ is empty or missing, nothing was transcribed"
+    EXIT_CODE=1
+fi
+
 echo "============================================================"
 echo "Transcription finished"
 echo "Exit code: ${EXIT_CODE}"
