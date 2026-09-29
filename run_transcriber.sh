@@ -46,7 +46,7 @@ nvidia-smi
 echo "============================================================"
 
 # Run the main transcription program
-python -m src.transcriber
+python transcribe.py
 
 EXIT_CODE=$?
 
